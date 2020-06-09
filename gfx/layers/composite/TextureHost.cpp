@@ -222,13 +222,6 @@ already_AddRefed<TextureHost> TextureHost::Create(
 
 #ifdef MOZ_X11
     case SurfaceDescriptor::TSurfaceDescriptorX11: {
-      if (!aDeallocator->IsSameProcess()) {
-        NS_ERROR(
-            "A client process is trying to peek at our address space using a "
-            "X11Texture!");
-        return nullptr;
-      }
-
       const SurfaceDescriptorX11& desc = aDesc.get_SurfaceDescriptorX11();
       result = MakeAndAddRef<X11TextureHost>(aFlags, desc);
       break;
