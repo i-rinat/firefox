@@ -20,6 +20,11 @@ class X11TextureData : public TextureData {
                                 TextureFlags aFlags,
                                 LayersIPCChannel* aAllocator);
 
+  static X11TextureData* CreateX11Drawable(gfx::IntSize aSize,
+                                           gfx::SurfaceFormat aFormat,
+                                           TextureFlags aFlags,
+                                           LayersIPCChannel* aAllocator);
+
   virtual bool Serialize(SurfaceDescriptor& aOutDescriptor) override;
 
   virtual bool Lock(OpenMode aMode) override;
@@ -38,6 +43,8 @@ class X11TextureData : public TextureData {
       TextureAllocationFlags aAllocFlags = ALLOC_DEFAULT) const override;
 
   virtual bool UpdateFromSurface(gfx::SourceSurface* aSurface) override;
+
+  virtual Drawable PeekX11Drawable();
 
  protected:
   X11TextureData(gfx::IntSize aSize, gfx::SurfaceFormat aFormat,

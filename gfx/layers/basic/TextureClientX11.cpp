@@ -124,6 +124,44 @@ X11TextureData* X11TextureData::Create(gfx::IntSize aSize,
   }
 
   gfxXlibSurface* xlibSurface = static_cast<gfxXlibSurface*>(surface.get());
+  bool crossProcess = !aAllocator->IsSameProcess();
+  X11TextureData* texture = new X11TextureData(
+      aSize, aFormat, !!(aFlags & TextureFlags::DEALLOCATE_CLIENT),
+      crossProcess, xlibSurface);
+  if (crossProcess) {
+    FinishX(DefaultXDisplay());
+  }
+
+  return texture;
+}
+
+X11TextureData* X11TextureData::CreateX11Drawable(
+    gfx::IntSize aSize, gfx::SurfaceFormat aFormat, TextureFlags aFlags,
+    LayersIPCChannel* aAllocator) {
+  MOZ_ASSERT(aSize.width >= 0 && aSize.height >= 0);
+  if (aSize.width <= 0 || aSize.height <= 0 ||
+      aSize.width > XLIB_IMAGE_SIDE_SIZE_LIMIT ||
+      aSize.height > XLIB_IMAGE_SIDE_SIZE_LIMIT) {
+    gfxDebug() << "Asking for X11 surface of invalid size " << aSize.width
+               << "x" << aSize.height;
+    return nullptr;
+  }
+
+  GdkScreen* gdkScreen = gdk_screen_get_default();
+  if (!gdkScreen) {
+    return nullptr;
+  }
+
+  Screen* screen = gdk_x11_screen_get_xscreen(gdkScreen);
+  XRenderPictFormat* xrenderFormat =
+      gfxXlibSurface::FindRenderFormat(DisplayOfScreen(screen), aFormat);
+
+  if (!xrenderFormat) {
+    return nullptr;
+  }
+
+  RefPtr<gfxXlibSurface> xlibSurface =
+      gfxXlibSurface::Create(screen, xrenderFormat, aSize);
 
   bool crossProcess = !aAllocator->IsSameProcess();
   X11TextureData* texture = new X11TextureData(
@@ -134,6 +172,11 @@ X11TextureData* X11TextureData::Create(gfx::IntSize aSize,
   }
 
   return texture;
+}
+
+Drawable X11TextureData::PeekX11Drawable() {
+  MOZ_ASSERT(mSurface);
+  return mSurface->XDrawable();
 }
 
 }  // namespace mozilla::layers

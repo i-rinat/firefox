@@ -286,6 +286,7 @@ if CONFIG['MOZ_X11']:
         'composite/X11TextureHost.h',
         'ipc/ShadowLayerUtilsX11.h',
         'opengl/X11TextureSourceOGL.h',
+        'X11PixmapImage.h',
     ]
     SOURCES += [
         'basic/TextureClientX11.cpp',
@@ -294,6 +295,7 @@ if CONFIG['MOZ_X11']:
         'composite/X11TextureHost.cpp',
         'ipc/ShadowLayerUtilsX11.cpp',
         'opengl/X11TextureSourceOGL.cpp',
+        'X11PixmapImage.cpp',
     ]
 
 if CONFIG['MOZ_WAYLAND']:
