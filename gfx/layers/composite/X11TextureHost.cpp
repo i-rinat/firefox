@@ -10,6 +10,8 @@
 #include "mozilla/layers/CompositorOGL.h"
 #include "mozilla/layers/X11TextureSourceBasic.h"
 #include "mozilla/layers/X11TextureSourceOGL.h"
+#include "mozilla/webrender/RenderX11TextureHost.h"
+#include "mozilla/webrender/WebRenderAPI.h"
 #include "gfx2DGlue.h"
 #include "gfxPlatform.h"
 #include "gfxXlibSurface.h"
@@ -65,6 +67,9 @@ void X11TextureHost::SetTextureSourceProvider(
 }
 
 SurfaceFormat X11TextureHost::GetFormat() const {
+  if (!mCompositor) {
+    return SurfaceFormat::R8G8B8A8;
+  }
   if (!mSurface) {
     return SurfaceFormat::UNKNOWN;
   }
@@ -98,6 +103,46 @@ already_AddRefed<gfx::DataSourceSurface> X11TextureHost::GetAsSurface() {
     return nullptr;
   }
   return surf->GetDataSurface();
+}
+
+void X11TextureHost::CreateRenderTexture(
+    const wr::ExternalImageId& aExternalImageId) {
+  RefPtr<wr::RenderTextureHost> texture =
+      new wr::RenderX11TextureHost(mSurface);
+  wr::RenderThread::Get()->RegisterExternalImage(wr::AsUint64(aExternalImageId),
+                                                 texture.forget());
+}
+
+void X11TextureHost::PushDisplayItems(wr::DisplayListBuilder& aBuilder,
+                                      const wr::LayoutRect& aBounds,
+                                      const wr::LayoutRect& aClip,
+                                      wr::ImageRendering aFilter,
+                                      const Range<wr::ImageKey>& aImageKeys,
+                                      const bool aPreferCompositorSurface) {
+  MOZ_ASSERT(aImageKeys.length() == 1);
+  aBuilder.PushImage(aBounds, aClip, true, aFilter, aImageKeys[0],
+                     !(mFlags & TextureFlags::NON_PREMULTIPLIED),
+                     wr::ColorF{1.0f, 1.0f, 1.0f, 1.0f},
+                     aPreferCompositorSurface);
+}
+
+void X11TextureHost::PushResourceUpdates(wr::TransactionBuilder& aResources,
+                                         ResourceUpdateOp aOp,
+                                         const Range<wr::ImageKey>& aImageKeys,
+                                         const wr::ExternalImageId& aExtID) {
+  MOZ_ASSERT(mSurface);
+  MOZ_ASSERT(aImageKeys.length() == 1);
+
+  auto method = aOp == TextureHost::ADD_IMAGE
+                    ? &wr::TransactionBuilder::AddExternalImage
+                    : &wr::TransactionBuilder::UpdateExternalImage;
+
+  auto imageType =
+      wr::ExternalImageType::TextureHandle(wr::TextureTarget::Default);
+
+  wr::ImageDescriptor descriptor(mSurface->GetSize(),
+                                 gfx::SurfaceFormat::B8G8R8A8);
+  (aResources.*method)(aImageKeys[0], descriptor, aExtID, imageType, 0);
 }
 
 }  // namespace mozilla::layers
