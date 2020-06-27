@@ -76,10 +76,10 @@ gfxXlibSurface::gfxXlibSurface(cairo_surface_t* csurf)
 
 gfxXlibSurface::~gfxXlibSurface() {
   // gfxASurface's destructor calls RecordMemoryFreed().
+  if (mGLXPixmap) {
+    gl::sGLXLibrary.DestroyPixmap(mDisplay, mGLXPixmap);
+  }
   if (mPixmapTaken) {
-    if (mGLXPixmap) {
-      gl::sGLXLibrary.DestroyPixmap(mDisplay, mGLXPixmap);
-    }
     XFreePixmap(mDisplay, mDrawable);
   }
 }
