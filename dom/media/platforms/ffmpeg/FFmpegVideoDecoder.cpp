@@ -260,6 +260,20 @@ static bool VAAPIDecodeAvailable(layers::LayersBackend layersBackend,
       return true;
     }
 
+    // TODO: remove this "allow all".
+    fprintf(stderr, "r: compositor type: %s\n",
+            layers::GetLayersBackendName(layersBackend));
+    fprintf(stderr, "r: media.ffmpeg.vaapi.enabled = %d\n",
+            StaticPrefs::media_ffmpeg_vaapi_enabled());
+    fprintf(stderr, "r: gfx.use-glx-texture-from-pixmap = %d\n",
+            StaticPrefs::gfx_use_glx_texture_from_pixmap());
+    fprintf(stderr, "r: gfx.xrender.enabled = %d\n",
+            mozilla::Preferences::GetBool("gfx.xrender.enabled"));
+    fprintf(stderr, "r: gfx::gfxVars::UseXRender() = %d\n",
+            gfx::gfxVars::UseXRender());
+    return true;
+    // ----------------
+
     FFMPEG_LOG("VA-API/X11 needs Basic compositor with XRender enabled");
     return false;
   }
