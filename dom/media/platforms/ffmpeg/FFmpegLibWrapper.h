@@ -16,9 +16,15 @@ struct AVPacket;
 struct AVDictionary;
 struct AVCodecParserContext;
 struct PRLibrary;
-#ifdef MOZ_WAYLAND
+#if defined(MOZ_WAYLAND) || defined(MOZ_X11)
 struct AVCodecHWConfig;
 struct AVBufferRef;
+using VAStatus = int;
+using VASurfaceID = unsigned int;
+struct VARectangle;
+#endif
+#if defined(MOZ_X11)
+using Drawable = unsigned long;
 #endif
 
 namespace mozilla {
@@ -53,7 +59,7 @@ struct MOZ_ONLY_USED_TO_AVOID_STATIC_CONSTRUCTORS FFmpegLibWrapper {
   // Reset the wrapper and unlink all attached libraries.
   void Unlink();
 
-#ifdef MOZ_WAYLAND
+#if defined(MOZ_WAYLAND) || defined(MOZ_X11)
   // Check if mVALib are available and we can use HW decode.
   bool IsVAAPIAvailable();
 #endif
@@ -113,7 +119,7 @@ struct MOZ_ONLY_USED_TO_AVOID_STATIC_CONSTRUCTORS FFmpegLibWrapper {
   int (*av_frame_get_colorspace)(const AVFrame* frame);
   int (*av_frame_get_color_range)(const AVFrame* frame);
 
-#ifdef MOZ_WAYLAND
+#if defined(MOZ_WAYLAND) || defined(MOZ_X11)
   const AVCodecHWConfig* (*avcodec_get_hw_config)(const AVCodec* codec,
                                                   int index);
   AVBufferRef* (*av_hwdevice_ctx_alloc)(int);
@@ -134,14 +140,30 @@ struct MOZ_ONLY_USED_TO_AVOID_STATIC_CONSTRUCTORS FFmpegLibWrapper {
   int (*vaSyncSurface)(void*, unsigned int);
   int (*vaInitialize)(void* dpy, int* major_version, int* minor_version);
   int (*vaTerminate)(void* dpy);
+#endif
+#ifdef MOZ_WAYLAND
   void* (*vaGetDisplayWl)(struct wl_display* display);
+#endif
+#if defined(MOZ_X11)
+  VAStatus (*vaPutSurface)(void* va_dpy, VASurfaceID surface, Drawable draw,
+                           short srcx, short srcy, unsigned short srcw,
+                           unsigned short srch, short destx, short desty,
+                           unsigned short destw, unsigned short desth,
+                           VARectangle* cliprects,
+                           unsigned int number_cliprects, unsigned int flags);
+  void* (*vaGetDisplay)(void* x11_dpy);
 #endif
 
   PRLibrary* mAVCodecLib;
   PRLibrary* mAVUtilLib;
-#ifdef MOZ_WAYLAND
+#if defined(MOZ_WAYLAND) || defined(MOZ_X11)
   PRLibrary* mVALib;
+#endif
+#ifdef MOZ_WAYLAND
   PRLibrary* mVALibWayland;
+#endif
+#ifdef MOZ_X11
+  PRLibrary* mVAX11Lib;
 #endif
 
  private:

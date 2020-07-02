@@ -11,6 +11,9 @@
 #include "mozilla/Types.h"
 #include "PlatformDecoderModule.h"
 #include "prlink.h"
+#if defined(MOZ_WAYLAND) || defined(MOZ_X11)
+#  include "gfxPlatformGtk.h"
+#endif
 
 #define AV_LOG_DEBUG 48
 #define AV_LOG_INFO 32
@@ -157,7 +160,7 @@ FFmpegLibWrapper::LinkResult FFmpegLibWrapper::Link() {
                            AV_FUNC_AVUTIL_57 | AV_FUNC_AVUTIL_58))
   AV_FUNC_OPTION(av_frame_get_colorspace, AV_FUNC_AVUTIL_ALL)
   AV_FUNC_OPTION(av_frame_get_color_range, AV_FUNC_AVUTIL_ALL)
-#ifdef MOZ_WAYLAND
+#if defined(MOZ_WAYLAND) || defined(MOZ_X11)
   AV_FUNC_OPTION_SILENT(avcodec_get_hw_config, AV_FUNC_58)
   AV_FUNC_OPTION_SILENT(av_hwdevice_ctx_init, AV_FUNC_58)
   AV_FUNC_OPTION_SILENT(av_hwdevice_ctx_alloc, AV_FUNC_58)
@@ -172,32 +175,32 @@ FFmpegLibWrapper::LinkResult FFmpegLibWrapper::Link() {
 #undef AV_FUNC
 #undef AV_FUNC_OPTION
 
-#ifdef MOZ_WAYLAND
-#  define VA_FUNC_OPTION_SILENT(func)                             \
-    if (!(func = (decltype(func))PR_FindSymbol(mVALib, #func))) { \
-      func = (decltype(func)) nullptr;                            \
-    }
+#define VA_FUNC_OPTION_SILENT(lib, func) \
+  func = (decltype(func))PR_FindSymbol(lib, #func);
 
+#if defined(MOZ_WAYLAND) || defined(MOZ_X11)
   // mVALib is optional and may not be present.
   if (mVALib) {
-    VA_FUNC_OPTION_SILENT(vaExportSurfaceHandle)
-    VA_FUNC_OPTION_SILENT(vaSyncSurface)
-    VA_FUNC_OPTION_SILENT(vaInitialize)
-    VA_FUNC_OPTION_SILENT(vaTerminate)
+    VA_FUNC_OPTION_SILENT(mVALib, vaExportSurfaceHandle);
+    VA_FUNC_OPTION_SILENT(mVALib, vaSyncSurface);
+    VA_FUNC_OPTION_SILENT(mVALib, vaInitialize);
+    VA_FUNC_OPTION_SILENT(mVALib, vaTerminate);
   }
-#  undef VA_FUNC_OPTION_SILENT
-
-#  define VAW_FUNC_OPTION_SILENT(func)                                   \
-    if (!(func = (decltype(func))PR_FindSymbol(mVALibWayland, #func))) { \
-      FFMPEG_LOG("Couldn't load function " #func);                       \
-    }
-
+#endif
+#if defined(MOZ_WAYLAND)
   // mVALibWayland is optional and may not be present.
   if (mVALibWayland) {
-    VAW_FUNC_OPTION_SILENT(vaGetDisplayWl)
+    VA_FUNC_OPTION_SILENT(mVALibWayland, vaGetDisplayWl);
   }
-#  undef VAW_FUNC_OPTION_SILENT
 #endif
+
+#if defined(MOZ_X11)
+  if (mVAX11Lib) {
+    VA_FUNC_OPTION_SILENT(mVAX11Lib, vaPutSurface);
+    VA_FUNC_OPTION_SILENT(mVAX11Lib, vaGetDisplay);
+  }
+#endif
+#undef VA_FUNC_OPTION_SILENT
 
   avcodec_register_all();
   if (MOZ_LOG_TEST(sPDMLog, LogLevel::Debug)) {
@@ -228,31 +231,56 @@ void FFmpegLibWrapper::Unlink() {
     PR_UnloadLibrary(mAVCodecLib);
   }
 #endif
-#ifdef MOZ_WAYLAND
+#if defined(MOZ_WAYLAND) || defined(MOZ_X11)
   if (mVALib) {
     PR_UnloadLibrary(mVALib);
   }
+#endif
+#if defined(MOZ_WAYLAND)
   if (mVALibWayland) {
     PR_UnloadLibrary(mVALibWayland);
+  }
+#endif
+#if defined(MOZ_X11)
+  if (mVAX11Lib) {
+    PR_UnloadLibrary(mVAX11Lib);
   }
 #endif
   PodZero(this);
 }
 
-#ifdef MOZ_WAYLAND
+#if defined(MOZ_WAYLAND) || defined(MOZ_X11)
 bool FFmpegLibWrapper::IsVAAPIAvailable() {
 #  define VA_FUNC_LOADED(func) (func != nullptr)
-  return VA_FUNC_LOADED(avcodec_get_hw_config) &&
-         VA_FUNC_LOADED(av_hwdevice_ctx_alloc) &&
-         VA_FUNC_LOADED(av_hwdevice_ctx_init) &&
-         VA_FUNC_LOADED(av_buffer_ref) && VA_FUNC_LOADED(av_buffer_unref) &&
-         VA_FUNC_LOADED(av_hwframe_transfer_get_formats) &&
-         VA_FUNC_LOADED(av_hwdevice_ctx_create_derived) &&
-         VA_FUNC_LOADED(av_hwframe_ctx_alloc) && VA_FUNC_LOADED(av_dict_set) &&
-         VA_FUNC_LOADED(av_dict_free) &&
-         VA_FUNC_LOADED(vaExportSurfaceHandle) &&
-         VA_FUNC_LOADED(vaSyncSurface) && VA_FUNC_LOADED(vaInitialize) &&
-         VA_FUNC_LOADED(vaTerminate) && VA_FUNC_LOADED(vaGetDisplayWl);
+
+  bool vaapiAvailable = VA_FUNC_LOADED(avcodec_get_hw_config) &&            //
+                        VA_FUNC_LOADED(av_hwdevice_ctx_alloc) &&            //
+                        VA_FUNC_LOADED(av_hwdevice_ctx_init) &&             //
+                        VA_FUNC_LOADED(av_buffer_ref) &&                    //
+                        VA_FUNC_LOADED(av_buffer_unref) &&                  //
+                        VA_FUNC_LOADED(av_hwframe_transfer_get_formats) &&  //
+                        VA_FUNC_LOADED(av_hwdevice_ctx_create_derived) &&   //
+                        VA_FUNC_LOADED(av_hwframe_ctx_alloc) &&             //
+                        VA_FUNC_LOADED(av_dict_set) &&                      //
+                        VA_FUNC_LOADED(av_dict_free) &&                     //
+                        VA_FUNC_LOADED(vaInitialize) &&                     //
+                        VA_FUNC_LOADED(vaTerminate);                        //
+
+  if (gfxPlatformGtk::GetPlatform()->IsX11Display()) {
+    vaapiAvailable = vaapiAvailable &&                //
+                     VA_FUNC_LOADED(vaGetDisplay) &&  //
+                     VA_FUNC_LOADED(vaPutSurface);    //
+  } else {
+#  if defined(MOZ_WAYLAND)
+    MOZ_ASSERT(gfxPlatformGtk::GetPlatform()->IsWaylandDisplay());
+    vaapiAvailable = vaapiAvailable &&                         //
+                     VA_FUNC_LOADED(vaExportSurfaceHandle) &&  //
+                     VA_FUNC_LOADED(vaSyncSurface) &&          //
+                     VA_FUNC_LOADED(vaGetDisplayWl);           //
+#  endif
+  }
+
+  return vaapiAvailable;
 }
 #endif
 

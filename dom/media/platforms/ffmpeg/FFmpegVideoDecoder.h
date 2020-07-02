@@ -14,6 +14,10 @@
 #  include "mozilla/widget/DMABufSurface.h"
 #  include "mozilla/LinkedList.h"
 #endif
+#ifdef MOZ_X11_VAAPI
+#  include "mozilla/layers/X11PixmapImage.h"
+#  include "mozilla/X11Util.h"
+#endif
 
 namespace mozilla {
 
@@ -143,21 +147,29 @@ class FFmpegVideoDecoder<LIBAV_VER>
   MediaResult CreateImage(int64_t aOffset, int64_t aPts, int64_t aDuration,
                           MediaDataDecoder::DecodedData& aResults);
 
-#ifdef MOZ_WAYLAND_USE_VAAPI
+#if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
   MediaResult InitVAAPIDecoder();
   bool CreateVAAPIDeviceContext();
   void InitVAAPICodecContext();
   AVCodec* FindVAAPICodec();
   bool IsHardwareAccelerated(nsACString& aFailureReason) const override;
+#  ifdef MOZ_WAYLAND_USE_VAAPI
   bool GetVAAPISurfaceDescriptor(VADRMPRIMESurfaceDescriptor& aVaDesc);
 
   MediaResult CreateImageDMABuf(int64_t aOffset, int64_t aPts,
                                 int64_t aDuration,
                                 MediaDataDecoder::DecodedData& aResults);
+#  endif
 
   void ReleaseUnusedVAAPIFrames();
   DMABufSurfaceWrapper* GetUnusedDMABufSurfaceWrapper();
   void ReleaseDMABufSurfaces();
+#endif
+
+#ifdef MOZ_X11_VAAPI
+  MediaResult CreateX11PixmapImage(int64_t aOffset, int64_t aPts,
+                                   int64_t aDuration,
+                                   MediaDataDecoder::DecodedData& aResults);
 #endif
 
   /**
@@ -169,12 +181,18 @@ class FFmpegVideoDecoder<LIBAV_VER>
   int AllocateYUV420PVideoBuffer(AVCodecContext* aCodecContext,
                                  AVFrame* aFrame);
 
-#ifdef MOZ_WAYLAND_USE_VAAPI
+#if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
   AVBufferRef* mVAAPIDeviceContext;
   const bool mDisableHardwareDecoding;
   VADisplay mDisplay;
+#  ifdef MOZ_WAYLAND_USE_VAAPI
   bool mUseDMABufSurfaces;
   nsTArray<DMABufSurfaceWrapper> mDMABufSurfaces;
+#  endif
+  const bool mIsX11;
+#endif
+#ifdef MOZ_X11_VAAPI
+  Display* mX11Display;
 #endif
   RefPtr<KnowsCompositor> mImageAllocator;
   RefPtr<ImageContainer> mImageContainer;
@@ -198,6 +216,9 @@ class FFmpegVideoDecoder<LIBAV_VER>
 
   DurationMap mDurationMap;
   const bool mLowLatency;
+#ifdef MOZ_X11_VAAPI
+  RefPtr<layers::X11PixmapRecycleAllocator> mTextureClientAllocator;
+#endif
 };
 
 }  // namespace mozilla

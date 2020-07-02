@@ -14,7 +14,7 @@ extern "C" {
 #include "libavcodec/avcodec.h"
 #include "libavutil/avutil.h"
 #include "libavutil/mem.h"
-#ifdef MOZ_WAYLAND_USE_VAAPI
+#if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
 #  include "libavutil/hwcontext_vaapi.h"
 #endif
 #ifdef __GNUC__

@@ -11,10 +11,18 @@
 #include "MediaInfo.h"
 #include "VPXDecoder.h"
 #include "mozilla/layers/KnowsCompositor.h"
-#ifdef MOZ_WAYLAND_USE_VAAPI
-#  include "gfxPlatformGtk.h"
-#  include "mozilla/layers/DMABUFSurfaceImage.h"
+#if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
 #  include "H264.h"
+#  include "gfxPlatformGtk.h"
+#endif
+#ifdef MOZ_WAYLAND_USE_VAAPI
+#  include "mozilla/layers/DMABUFSurfaceImage.h"
+#endif
+#ifdef MOZ_X11_VAAPI
+#  include "gfxXlibSurface.h"
+#  include "mozilla/layers/TextureClientX11.h"
+#  include "mozilla/layers/TextureForwarder.h"
+#  include "mozilla/layers/TextureWrapperImage.h"
 #endif
 
 #include "libavutil/pixfmt.h"
@@ -35,11 +43,12 @@
 #include "prsystem.h"
 
 // Forward declare from va.h
-#ifdef MOZ_WAYLAND_USE_VAAPI
+#if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
 typedef int VAStatus;
 #  define VA_EXPORT_SURFACE_READ_ONLY 0x0001
 #  define VA_EXPORT_SURFACE_SEPARATE_LAYERS 0x0004
 #  define VA_STATUS_SUCCESS 0x00000000
+#  define VA_FRAME_PICTURE 0x00000000
 #endif
 
 // Use some extra HW frames for potential rendering lags.
@@ -104,7 +113,7 @@ static AVPixelFormat ChoosePixelFormat(AVCodecContext* aCodecContext,
   return AV_PIX_FMT_NONE;
 }
 
-#ifdef MOZ_WAYLAND_USE_VAAPI
+#if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
 static AVPixelFormat ChooseVAAPIPixelFormat(AVCodecContext* aCodecContext,
                                             const AVPixelFormat* aFormats) {
   FFMPEG_LOG("Choosing FFmpeg pixel format for VA-API video decoding.");
@@ -121,7 +130,9 @@ static AVPixelFormat ChooseVAAPIPixelFormat(AVCodecContext* aCodecContext,
   NS_WARNING("FFmpeg does not share any supported pixel formats.");
   return AV_PIX_FMT_NONE;
 }
+#endif
 
+#ifdef MOZ_WAYLAND_USE_VAAPI
 DMABufSurfaceWrapper::DMABufSurfaceWrapper(DMABufSurface* aSurface,
                                            FFmpegLibWrapper* aLib)
     : mSurface(aSurface),
@@ -161,7 +172,9 @@ DMABufSurfaceWrapper::~DMABufSurfaceWrapper() {
              mSurface->GetUID());
   ReleaseVAAPIData();
 }
+#endif
 
+#if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
 AVCodec* FFmpegVideoDecoder<LIBAV_VER>::FindVAAPICodec() {
   AVCodec* decoder = mLib->avcodec_find_decoder(mCodecID);
   for (int i = 0;; i++) {
@@ -207,12 +220,18 @@ bool FFmpegVideoDecoder<LIBAV_VER>::CreateVAAPIDeviceContext() {
   AVHWDeviceContext* hwctx = (AVHWDeviceContext*)mVAAPIDeviceContext->data;
   AVVAAPIDeviceContext* vactx = (AVVAAPIDeviceContext*)hwctx->hwctx;
 
-  wl_display* display = widget::WaylandDisplayGetWLDisplay();
-  if (!display) {
-    FFMPEG_LOG("Can't get default wayland display.");
-    return false;
+  if (mIsX11) {
+    mDisplay = mLib->vaGetDisplay(mX11Display);
+  } else {
+#  ifdef MOZ_WAYLAND_USE_VAAPI
+    wl_display* display = widget::WaylandDisplayGetWLDisplay();
+    if (!display) {
+      FFMPEG_LOG("Can't get default wayland display.");
+      return false;
+    }
+    mDisplay = mLib->vaGetDisplayWl(display);
+#  endif
   }
-  mDisplay = mLib->vaGetDisplayWl(display);
 
   hwctx->user_opaque = new VAAPIDisplayHolder(mLib, mDisplay);
   hwctx->free = VAAPIDisplayReleaseCallback;
@@ -233,6 +252,27 @@ bool FFmpegVideoDecoder<LIBAV_VER>::CreateVAAPIDeviceContext() {
   return true;
 }
 
+static bool VAAPIDecodeAvailable(layers::LayersBackend layersBackend,
+                                 bool aIsX11) {
+  if (aIsX11) {
+    if (layersBackend == layers::LayersBackend::LAYERS_BASIC &&
+        gfx::gfxVars::UseXRender()) {
+      return true;
+    }
+
+    FFMPEG_LOG("VA-API/X11 needs Basic compositor with XRender enabled");
+    return false;
+  }
+
+  // Wayland.
+  if (layersBackend == layers::LayersBackend::LAYERS_WR) {
+    return true;
+  }
+
+  FFMPEG_LOG("VA-API works with WebRender only!");
+  return false;
+}
+
 MediaResult FFmpegVideoDecoder<LIBAV_VER>::InitVAAPIDecoder() {
   FFMPEG_LOG("Initialising VA-API FFmpeg decoder");
 
@@ -240,6 +280,23 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::InitVAAPIDecoder() {
     FFMPEG_LOG("libva library or symbols are missing.");
     return NS_ERROR_NOT_AVAILABLE;
   }
+
+  auto layersBackend = mImageAllocator
+                           ? mImageAllocator->GetCompositorBackendType()
+                           : layers::LayersBackend::LAYERS_BASIC;
+
+  if (!VAAPIDecodeAvailable(layersBackend, mIsX11)) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+#  if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
+  if (mIsX11) {
+    if (!StaticPrefs::media_ffmpeg_vaapi_enabled()) {
+      FFMPEG_LOG("VA-API FFmpeg is disabled by preferences");
+      return NS_ERROR_NOT_AVAILABLE;
+    }
+  }
+#  endif
 
   AVCodec* codec = FindVAAPICodec();
   if (!codec) {
@@ -322,11 +379,15 @@ FFmpegVideoDecoder<LIBAV_VER>::FFmpegVideoDecoder(
     KnowsCompositor* aAllocator, ImageContainer* aImageContainer,
     bool aLowLatency, bool aDisableHardwareDecoding)
     : FFmpegDataDecoder(aLib, aTaskQueue, GetCodecId(aConfig.mMimeType)),
-#ifdef MOZ_WAYLAND_USE_VAAPI
+#if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
       mVAAPIDeviceContext(nullptr),
       mDisableHardwareDecoding(aDisableHardwareDecoding),
       mDisplay(nullptr),
       mUseDMABufSurfaces(false),
+      mIsX11(gfxPlatformGtk::GetPlatform()->IsX11Display()),
+#endif
+#ifdef MOZ_X11_VAAPI
+      mX11Display(DefaultXDisplay()),
 #endif
       mImageAllocator(aAllocator),
       mImageContainer(aImageContainer),
@@ -348,13 +409,18 @@ FFmpegVideoDecoder<LIBAV_VER>::FFmpegVideoDecoder(
     FFMPEG_LOG("DMA-BUF/VA-API can't be used, WebRender/Wayland is disabled");
   }
 #endif
+
+#ifdef MOZ_X11_VAAPI
+  mTextureClientAllocator =
+      new layers::X11PixmapRecycleAllocator(aAllocator, nullptr);
+#endif
 }
 
 RefPtr<MediaDataDecoder::InitPromise> FFmpegVideoDecoder<LIBAV_VER>::Init() {
   MediaResult rv;
 
-#ifdef MOZ_WAYLAND_USE_VAAPI
-  if (mUseDMABufSurfaces && !mDisableHardwareDecoding) {
+#if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
+  if ((mUseDMABufSurfaces || mIsX11) && !mDisableHardwareDecoding) {
     rv = InitVAAPIDecoder();
     if (NS_SUCCEEDED(rv)) {
       return InitPromise::CreateAndResolve(TrackInfo::kVideoTrack, __func__);
@@ -368,7 +434,7 @@ RefPtr<MediaDataDecoder::InitPromise> FFmpegVideoDecoder<LIBAV_VER>::Init() {
   }
 
   return InitPromise::CreateAndReject(rv, __func__);
-}
+}  // namespace mozilla
 
 void FFmpegVideoDecoder<LIBAV_VER>::InitCodecContext() {
   mCodecContext->width = mInfo.mImage.width;
@@ -404,17 +470,20 @@ void FFmpegVideoDecoder<LIBAV_VER>::InitCodecContext() {
   mCodecContext->get_format = ChoosePixelFormat;
 }
 
-#ifdef MOZ_WAYLAND_USE_VAAPI
+#if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
 void FFmpegVideoDecoder<LIBAV_VER>::InitVAAPICodecContext() {
   mCodecContext->width = mInfo.mImage.width;
   mCodecContext->height = mInfo.mImage.height;
   mCodecContext->thread_count = 1;
   mCodecContext->get_format = ChooseVAAPIPixelFormat;
-  if (mCodecID == AV_CODEC_ID_H264) {
-    mCodecContext->extra_hw_frames =
-        H264::ComputeMaxRefFrames(mInfo.mExtraData);
-  } else {
-    mCodecContext->extra_hw_frames = EXTRA_HW_FRAMES;
+
+  if (!mIsX11) {
+    if (mCodecID == AV_CODEC_ID_H264) {
+      mCodecContext->extra_hw_frames =
+          H264::ComputeMaxRefFrames(mInfo.mExtraData);
+    } else {
+      mCodecContext->extra_hw_frames = EXTRA_HW_FRAMES;
+    }
   }
 }
 #endif
@@ -475,8 +544,16 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::DoDecode(
     }
 
     MediaResult rv;
+
+#  if defined(MOZ_X11_VAAPI)
+    if (mVAAPIDeviceContext && mIsX11 && !mUseDMABufSurfaces) {
+      MOZ_ASSERT(mFrame->format == AV_PIX_FMT_VAAPI_VLD);
+      rv = CreateX11PixmapImage(mFrame->pkt_pos, mFrame->pkt_pts,
+                                mFrame->pkt_duration, aResults);
+    } else
+#  endif
 #  ifdef MOZ_WAYLAND_USE_VAAPI
-    if (mVAAPIDeviceContext || mUseDMABufSurfaces) {
+        if ((mVAAPIDeviceContext && !mIsX11) || mUseDMABufSurfaces) {
       rv = CreateImageDMABuf(mFrame->pkt_pos, mFrame->pkt_pts,
                              mFrame->pkt_duration, aResults);
 
@@ -806,6 +883,55 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImageDMABuf(
 }
 #endif
 
+#ifdef MOZ_X11_VAAPI
+MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateX11PixmapImage(
+    int64_t aOffset, int64_t aPts, int64_t aDuration,
+    MediaDataDecoder::DecodedData& aResults) {
+  FFMPEG_LOG("Got one VAAPI frame output with pts=%" PRId64 " dts=%" PRId64
+             " duration=%" PRId64 " opaque=%" PRId64,
+             aPts, mFrame->pkt_dts, aDuration, mCodecContext->reordered_opaque);
+
+  VASurfaceID surface_id =
+      static_cast<VASurfaceID>(reinterpret_cast<uintptr_t>(mFrame->data[3]));
+
+  RefPtr<layers::TextureClient> textureClient =
+      mTextureClientAllocator->CreateOrRecycleClient(
+          gfx::IntSize(mFrame->width, mFrame->height));
+
+  if (!textureClient) {
+    return MediaResult(NS_ERROR_FAILURE, RESULT_DETAIL("!textureClient"));
+  }
+
+  layers::X11TextureData* x11TextureData =
+      static_cast<layers::X11TextureData*>(textureClient->GetInternalData());
+
+  int ret = mLib->vaPutSurface(
+      mDisplay, surface_id, x11TextureData->PeekX11Drawable(), 0, 0,
+      mFrame->width, mFrame->height, 0, 0, mFrame->width, mFrame->height,
+      nullptr, 0, VA_FRAME_PICTURE);
+  if (ret != VA_STATUS_SUCCESS) {
+    return MediaResult(NS_ERROR_FAILURE, RESULT_DETAIL("!vaPutSurface"));
+  }
+
+  XFlush(mX11Display);
+
+  RefPtr<layers::Image> image = new layers::TextureWrapperImage(
+      textureClient, gfx::IntRect(0, 0, mFrame->width, mFrame->height));
+
+  RefPtr<VideoData> v = VideoData::CreateFromImage(
+      mInfo.mDisplay, aOffset, TimeUnit::FromMicroseconds(aPts),
+      TimeUnit::FromMicroseconds(aDuration), image, !!mFrame->key_frame,
+      TimeUnit::FromMicroseconds(-1));
+
+  if (!v) {
+    return MediaResult(NS_ERROR_OUT_OF_MEMORY, RESULT_DETAIL("!v"));
+  }
+
+  aResults.AppendElement(std::move(v));
+  return NS_OK;
+}
+#endif
+
 RefPtr<MediaDataDecoder::FlushPromise>
 FFmpegVideoDecoder<LIBAV_VER>::ProcessFlush() {
   mPtsContext.Reset();
@@ -841,6 +967,8 @@ AVCodecID FFmpegVideoDecoder<LIBAV_VER>::GetCodecId(
 void FFmpegVideoDecoder<LIBAV_VER>::ProcessShutdown() {
 #ifdef MOZ_WAYLAND_USE_VAAPI
   ReleaseDMABufSurfaces();
+#endif
+#if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
   if (mVAAPIDeviceContext) {
     mLib->av_buffer_unref(&mVAAPIDeviceContext);
   }
@@ -848,7 +976,7 @@ void FFmpegVideoDecoder<LIBAV_VER>::ProcessShutdown() {
   FFmpegDataDecoder<LIBAV_VER>::ProcessShutdown();
 }
 
-#ifdef MOZ_WAYLAND_USE_VAAPI
+#if defined(MOZ_WAYLAND_USE_VAAPI) || defined(MOZ_X11_VAAPI)
 bool FFmpegVideoDecoder<LIBAV_VER>::IsHardwareAccelerated(
     nsACString& aFailureReason) const {
   return !!mVAAPIDeviceContext;
